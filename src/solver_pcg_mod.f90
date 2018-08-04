@@ -146,10 +146,10 @@ contains
    !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
    do iblock=1,nblocks_tropic     ! nblocks_tropic = 8 ???
-      this_block = get_block(blocks_tropic(iblock),iblock)
+      this_block = get_block(blocks_tropic(iblock),iblock)    ! all_blocks(block_id)
 
       call btrop_operator(S,X,this_block,iblock)
-      R(:,:,iblock) = B(:,:,iblock) - S(:,:,iblock)  !R = B - AX
+      R(:,:,iblock) = B(:,:,iblock) - S(:,:,iblock)  !R = B - AX ; block info ref as 3rd demision
       S(:,:,iblock) = c0    ! c0 = 0_r8
    end do ! block loop
 
@@ -196,7 +196,7 @@ contains
             endwhere
          endif
 
-         WORK0(:,:,iblock) = R(:,:,iblock)*WORK1(:,:,iblock)
+         WORK0(:,:,iblock) = R(:,:,iblock)*WORK1(:,:,iblock)     ! Work0 = (R * R) / A0;  Work1 = R/A0;  R = B - AX
       end do ! block loop
 
       !$OMP END PARALLEL DO
@@ -207,18 +207,18 @@ contains
 !
 !-----------------------------------------------------------------------
 
-      if (lprecond) &
+      if (lprecond) &                ! lprecond = .false.
          call update_ghost_cells(WORK1,bndy_tropic, field_loc_center,&
-                                                    field_type_scalar)
+                                                    field_type_scalar)             
       !*** (r,(PC)r)
-      eta1 = global_sum(WORK0, distrb_tropic, field_loc_center, RCALCT_B)    ! global_sum_real (global_reductions.f90)   RCALCT_B 乘法mask  eta1 = global_sum_real;
+      eta1 = global_sum(WORK0, distrb_tropic, field_loc_center, RCALCT_B)    ! global_sum_real (global_reductions.f90)   RCALCT_B 乘法mask  eta1 = global_sum_real;  local_sum + WORK0(i,j,bid)*MASK(i,j,bid) ==> ALLREDUCE
 
       !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
       do iblock=1,nblocks_tropic
          this_block = get_block(blocks_tropic(iblock),iblock)
 
-         S(:,:,iblock) = WORK1(:,:,iblock) + S(:,:,iblock)*(eta1/eta0)
+         S(:,:,iblock) = WORK1(:,:,iblock) + S(:,:,iblock)*(eta1/eta0)           ! S = c0 for first iter; Wrok1 = R/A0 ==> S; eta1/eta0 = 1 / global sum;
 
 !-----------------------------------------------------------------------
 !
@@ -227,7 +227,7 @@ contains
 !-----------------------------------------------------------------------
 
          call btrop_operator(Q,S,this_block,iblock)      ! btrop_operator(AX,X,this_block,bid)
-         WORK0(:,:,iblock) = Q(:,:,iblock)*S(:,:,iblock)
+         WORK0(:,:,iblock) = Q(:,:,iblock)*S(:,:,iblock)     ! A_ * S * S; S = R/A0 + S * (eta/eta0); S = c0 for first iter
 
       end do ! block loop
 
@@ -239,20 +239,22 @@ contains
 !
 !-----------------------------------------------------------------------
 
+! Work 0 used to calc global sum, AX used to update ghost cells;
+
       call update_ghost_cells(Q, bndy_tropic, field_loc_center, &
                                               field_type_scalar)
 
       eta0 = eta1   ! next iter
       eta1 = eta0/global_sum(WORK0, distrb_tropic, &
-                             field_loc_center, RCALCT_B)
+                             field_loc_center, RCALCT_B)     ! eta1 = 1 / (global sum) ^ iter time;
 
       !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
       do iblock=1,nblocks_tropic
          this_block = get_block(blocks_tropic(iblock),iblock)
 
-         X(:,:,iblock) = X(:,:,iblock) + eta1*S(:,:,iblock)
-         R(:,:,iblock) = R(:,:,iblock) - eta1*Q(:,:,iblock)
+         X(:,:,iblock) = X(:,:,iblock) + eta1*S(:,:,iblock)        ! update the X , init = X0;
+         R(:,:,iblock) = R(:,:,iblock) - eta1*Q(:,:,iblock)        ! update the R , init = B - AX;
 
          if (mod(m,solv_ncheck) == 0) then
 
