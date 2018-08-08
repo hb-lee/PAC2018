@@ -36,6 +36,7 @@
 !  compute initial residual and initialize S
 !
 !-----------------------------------------------------------------------
+! each thread read their own data file
    write(outname,'(i9)')my_task
    if (my_task<10) outname = '00'//trim(adjustl(outname//'.nc'))
    if (my_task>=10 .and. my_task<100) outname = '0'//trim(adjustl(outname//'.nc'))

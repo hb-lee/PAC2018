@@ -141,7 +141,7 @@
 !-----------------------------------------------------------------------
 
    call init_mic_proc_flag
-   call init_domain_blocks       ! initial the block info for all blocks in domain
+   call init_domain_blocks       ! initial the block info for all blocks in domain; set position for each point
    call init_grid1               ! read grid.0.1 data, lat, lon, and topology
    write(6,*)'xiaobin initialize_POP1,my_task+1',my_task+1
    call init_domain_distribution(KMT_G)

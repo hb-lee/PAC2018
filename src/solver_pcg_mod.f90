@@ -126,7 +126,7 @@ contains
    real (r8) :: &
       eta0,eta1,rr ! scalar inner product results
 
-   real (r8), dimension(nx_block,ny_block,max_blocks_tropic) :: &
+   real (r8), dimension(nx_block,ny_block,max_blocks_tropic) :: & ! 184 * 104 * 9
       R, &! residual (b-Ax)
       S, &! conjugate direction vector
       Q,WORK0,WORK1 ! various cg intermediate results
@@ -145,8 +145,8 @@ contains
 
    !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
-   do iblock=1,nblocks_tropic     ! nblocks_tropic = 8 ???
-      this_block = get_block(blocks_tropic(iblock),iblock)    ! all_blocks(block_id)
+   do iblock=1,nblocks_tropic     ! nblocks_tropic = 8   local_block_num 
+      this_block = get_block(blocks_tropic(iblock),iblock)    ! all_blocks(block_id)    , size(blocks_tropic) = 8/7  0~27:8, 28~55:7  1 <= blocks_tropic(iblock) <= 56
 
       call btrop_operator(S,X,this_block,iblock)
       R(:,:,iblock) = B(:,:,iblock) - S(:,:,iblock)  !R = B - AX ; block info ref as 3rd demision
@@ -160,7 +160,7 @@ contains
 ! initialize fields and scalars
 !
 !-----------------------------------------------------------------------
-
+   ! bndy_tropic maxblocks_ew_snd = 3
    call update_ghost_cells(R, bndy_tropic, field_loc_center, &     !  constant 1
                                            field_type_scalar)   ! call boundary_2d_real  (boundary.f90)
    eta0 =c1
@@ -210,6 +210,7 @@ contains
       if (lprecond) &                ! lprecond = .false.
          call update_ghost_cells(WORK1,bndy_tropic, field_loc_center,&
                                                     field_type_scalar)             
+      ! distrb_tropic%local_block_num = 7 / 8
       !*** (r,(PC)r)
       eta1 = global_sum(WORK0, distrb_tropic, field_loc_center, RCALCT_B)    ! global_sum_real (global_reductions.f90)   RCALCT_B 乘法mask  eta1 = global_sum_real;  local_sum + WORK0(i,j,bid)*MASK(i,j,bid) ==> ALLREDUCE
 
@@ -356,15 +357,15 @@ contains
 
    do j=this_block%jb,this_block%je
    do i=this_block%ib,this_block%ie
-      PX(i,j,bid) = PCNE(i,j,bid)*X(i+1,j+1,bid) + &
-                    PCNW(i,j,bid)*X(i-1,j+1,bid) + &
-                    PCSE(i,j,bid)*X(i+1,j-1,bid) + &
-                    PCSW(i,j,bid)*X(i-1,j-1,bid) + &
-                    PCN (i,j,bid)*X(i ,j+1,bid) + &
-                    PCS (i,j,bid)*X(i ,j-1,bid) + &
-                    PCE (i,j,bid)*X(i+1,j ,bid) + &
-                    PCW (i,j,bid)*X(i-1,j ,bid) + &
-                    PCC (i,j,bid)*X(i ,j ,bid)
+      PX(i,j,bid) = PCNE(i,j,bid)*X(i+1,j+1,bid) + & !NE  precondNE
+                    PCNW(i,j,bid)*X(i-1,j+1,bid) + & !NW
+                    PCSE(i,j,bid)*X(i+1,j-1,bid) + & !SE
+                    PCSW(i,j,bid)*X(i-1,j-1,bid) + & !SW
+                    PCN (i,j,bid)*X(i ,j+1,bid) + & !N
+                    PCS (i,j,bid)*X(i ,j-1,bid) + & !S
+                    PCE (i,j,bid)*X(i+1,j ,bid) + & !E
+                    PCW (i,j,bid)*X(i-1,j ,bid) + & !W
+                    PCC (i,j,bid)*X(i ,j ,bid) !Center
    end do
    end do
 
@@ -423,15 +424,15 @@ contains
 
    do j=this_block%jb,this_block%je
    do i=this_block%ib,this_block%ie
-      AX(i,j,bid) = A0 (i ,j ,bid)*X(i ,j ,bid) + &
-                    AN (i ,j ,bid)*X(i ,j+1,bid) + &
-                    AN (i ,j-1,bid)*X(i ,j-1,bid) + &
-                    AE (i ,j ,bid)*X(i+1,j ,bid) + &
-                    AE (i-1,j ,bid)*X(i-1,j ,bid) + &
-                    ANE(i ,j ,bid)*X(i+1,j+1,bid) + &
-                    ANE(i ,j-1,bid)*X(i+1,j-1,bid) + &
-                    ANE(i-1,j ,bid)*X(i-1,j+1,bid) + &
-                    ANE(i-1,j-1,bid)*X(i-1,j-1,bid)
+      AX(i,j,bid) = A0 (i ,j ,bid)*X(i ,j ,bid) + & !center  btropWgtCenter
+                    AN (i ,j ,bid)*X(i ,j+1,bid) + & !north
+                    AN (i ,j-1,bid)*X(i ,j-1,bid) + & !north
+                    AE (i ,j ,bid)*X(i+1,j ,bid) + & !east
+                    AE (i-1,j ,bid)*X(i-1,j ,bid) + & !east
+                    ANE(i ,j ,bid)*X(i+1,j+1,bid) + & !NE
+                    ANE(i ,j-1,bid)*X(i+1,j-1,bid) + & !NE
+                    ANE(i-1,j ,bid)*X(i-1,j+1,bid) + & !NE
+                    ANE(i-1,j-1,bid)*X(i-1,j-1,bid) !NE
    end do
    end do
 

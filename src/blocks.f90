@@ -189,7 +189,7 @@ contains
          if (ie > nx_global) ie = nx_global
 
          all_blocks(n)%block_id = n
-         all_blocks(n)%iblock = iblock
+         all_blocks(n)%iblock = iblock    ! coordinate in x direction
          all_blocks(n)%jblock = jblock
          all_blocks(n)%ib = nghost + 1
          all_blocks(n)%jb = nghost + 1
@@ -197,7 +197,7 @@ contains
          all_blocks(n)%je = ny_block - nghost ! default value
 
          do j=1,ny_block
-            j_global(j,n) = js - nghost + j - 1
+            j_global(j,n) = js - nghost + j - 1   ! include the nghost
 
 
             !*** southern ghost cells
