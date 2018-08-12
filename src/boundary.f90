@@ -1566,7 +1566,6 @@ contains
 !  also initialize ghost cells to zero
 !
 !-----------------------------------------------------------------------
-
    !call timer_start(bndy_2d_local)
    do n=1,in_bndy%nlocal_ew
       src_block = in_bndy%local_ew_src_block(n)
@@ -1693,7 +1692,6 @@ contains
 !-----------------------------------------------------------------------
 
    if (allocated(tripole_dbuf)) tripole_dbuf = c0
-
    !call timer_start(bndy_2d_local)
    do n=1,in_bndy%nlocal_ns
       src_block = in_bndy%local_ns_src_block(n)

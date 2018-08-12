@@ -124,9 +124,9 @@ contains
       iblock ! local block counter
 
    real (r8) :: &
-      eta0,eta1,rr ! scalar inner product results
+      eta0,eta1,rr,rr_old ! scalar inner product results
 
-   real (r8), dimension(nx_block,ny_block,max_blocks_tropic) :: & ! 184 * 104 * 9
+   real (r8), dimension(nx_block,ny_block,max_blocks_tropic) :: &
       R, &! residual (b-Ax)
       S, &! conjugate direction vector
       Q,WORK0,WORK1 ! various cg intermediate results
@@ -145,12 +145,14 @@ contains
 
    !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
-   do iblock=1,nblocks_tropic     ! nblocks_tropic = 8   local_block_num 
-      this_block = get_block(blocks_tropic(iblock),iblock)    ! all_blocks(block_id)    , size(blocks_tropic) = 8/7  0~27:8, 28~55:7  1 <= blocks_tropic(iblock) <= 56
+   do iblock=1,nblocks_tropic
+      this_block = get_block(blocks_tropic(iblock),iblock)
 
-      call btrop_operator(S,X,this_block,iblock)
-      R(:,:,iblock) = B(:,:,iblock) - S(:,:,iblock)  !R = B - AX ; block info ref as 3rd demision
-      S(:,:,iblock) = c0    ! c0 = 0_r8
+      call btrop_operator_opt(S,X,this_block,iblock)
+      R(:,:,iblock) = B(:,:,iblock) - S(:,:,iblock)
+          WORK0(:,:,iblock) = R(:,:,iblock)*R(:,:,iblock)
+      S(:,:,iblock) = c0
+          Q(:,:,iblock) = c0
    end do ! block loop
 
    !$OMP END PARALLEL DO
@@ -160,11 +162,13 @@ contains
 ! initialize fields and scalars
 !
 !-----------------------------------------------------------------------
-   ! bndy_tropic maxblocks_ew_snd = 3
-   call update_ghost_cells(R, bndy_tropic, field_loc_center, &     !  constant 1
-                                           field_type_scalar)   ! call boundary_2d_real  (boundary.f90)
+
+   call update_ghost_cells(R, bndy_tropic, field_loc_center, &
+                                           field_type_scalar)
+   rr = global_sum(WORK0, distrb_tropic, field_loc_center, RCALCT_B)
+   rr_old = rr
    eta0 =c1
-   solv_sum_iters = solv_max_iters    ! solv_max_iters = 1000
+   solv_sum_iters = solv_max_iters
 
 !-----------------------------------------------------------------------
 !
@@ -185,20 +189,13 @@ contains
 
       do iblock=1,nblocks_tropic
          this_block = get_block(blocks_tropic(iblock),iblock)
-
-         if (lprecond) then     ! lprecond = .false.
-            call preconditioner(WORK1,R,this_block,iblock)        ! preconditioner(PX,X,this_block,bid)
+         if (lprecond) then
+            call preconditioner(WORK1,R,this_block,iblock)
          else
-            where (A0(:,:,iblock) /= c0)
-               WORK1(:,:,iblock) = R(:,:,iblock)/A0(:,:,iblock)
-            elsewhere
-               WORK1(:,:,iblock) = c0
-            endwhere
+            call btrop_operator_opt(WORK1, R, this_block, iblock)
          endif
-
-         WORK0(:,:,iblock) = R(:,:,iblock)*WORK1(:,:,iblock)     ! Work0 = (R * R) / A0;  Work1 = R/A0;  R = B - AX
+            WORK0(:,:,iblock) = R(:,:,iblock)*WORK1(:,:,iblock)
       end do ! block loop
-
       !$OMP END PARALLEL DO
 
 !-----------------------------------------------------------------------
@@ -207,29 +204,24 @@ contains
 !
 !-----------------------------------------------------------------------
 
-      if (lprecond) &                ! lprecond = .false.
-         call update_ghost_cells(WORK1,bndy_tropic, field_loc_center,&
-                                                    field_type_scalar)             
-      ! distrb_tropic%local_block_num = 7 / 8
+      call update_ghost_cells(WORK1,bndy_tropic, field_loc_center,&
+                                                    field_type_scalar)
       !*** (r,(PC)r)
-      eta1 = global_sum(WORK0, distrb_tropic, field_loc_center, RCALCT_B)    ! global_sum_real (global_reductions.f90)   RCALCT_B 乘法mask  eta1 = global_sum_real;  local_sum + WORK0(i,j,bid)*MASK(i,j,bid) ==> ALLREDUCE
+      eta1 = global_sum(WORK0, distrb_tropic, field_loc_center, RCALCT_B)
 
       !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
       do iblock=1,nblocks_tropic
          this_block = get_block(blocks_tropic(iblock),iblock)
-
-         S(:,:,iblock) = WORK1(:,:,iblock) + S(:,:,iblock)*(eta1/eta0)           ! S = c0 for first iter; Wrok1 = R/A0 ==> S; eta1/eta0 = 1 / global sum;
-
+		 S(:,:,iblock) =  R(:,:,iblock) + S(:,:,iblock)*(eta1/eta0)
 !-----------------------------------------------------------------------
 !
 ! compute As
 !
 !-----------------------------------------------------------------------
 
-         call btrop_operator(Q,S,this_block,iblock)      ! btrop_operator(AX,X,this_block,bid)
-         WORK0(:,:,iblock) = Q(:,:,iblock)*S(:,:,iblock)     ! A_ * S * S; S = R/A0 + S * (eta/eta0); S = c0 for first iter
-
+         Q(:,:,iblock) = WORK1(:,:,iblock) + Q(:,:,iblock)*(eta1/eta0)
+         WORK0(:,:,iblock) = Q(:,:,iblock)*Q(:,:,iblock)
       end do ! block loop
 
       !$OMP END PARALLEL DO
@@ -239,29 +231,28 @@ contains
 ! compute next solution and residual
 !
 !-----------------------------------------------------------------------
-
-! Work 0 used to calc global sum, AX used to update ghost cells;
-
-      call update_ghost_cells(Q, bndy_tropic, field_loc_center, &
+      if (lprecond) &
+         call update_ghost_cells(Q, bndy_tropic, field_loc_center, &
                                               field_type_scalar)
 
-      eta0 = eta1   ! next iter
+      eta0 = eta1
       eta1 = eta0/global_sum(WORK0, distrb_tropic, &
-                             field_loc_center, RCALCT_B)     ! eta1 = 1 / (global sum) ^ iter time;
+                             field_loc_center, RCALCT_B)
 
       !$OMP PARALLEL DO PRIVATE(iblock,this_block)
 
       do iblock=1,nblocks_tropic
          this_block = get_block(blocks_tropic(iblock),iblock)
 
-         X(:,:,iblock) = X(:,:,iblock) + eta1*S(:,:,iblock)        ! update the X , init = X0;
-         R(:,:,iblock) = R(:,:,iblock) - eta1*Q(:,:,iblock)        ! update the R , init = B - AX;
+         X(:,:,iblock) = X(:,:,iblock) + eta1*S(:,:,iblock)
 
          if (mod(m,solv_ncheck) == 0) then
 
-            call btrop_operator(R,X,this_block,iblock)
+            call btrop_operator_opt(R,X,this_block,iblock)
             R(:,:,iblock) = B(:,:,iblock) - R(:,:,iblock)
             WORK0(:,:,iblock) = R(:,:,iblock)*R(:,:,iblock)
+         else
+            R(:,:,iblock) = R(:,:,iblock) - eta1*Q(:,:,iblock)
          endif
       end do ! block loop
 
@@ -273,23 +264,29 @@ contains
 !
 !-----------------------------------------------------------------------
 
-      if (mod(m,solv_ncheck) == 0) then    ! check per 10 times, solv_ncheck    = 10
+        if (mod(m,solv_ncheck) == 0) then
 
          call update_ghost_cells(R, bndy_tropic, field_loc_center,&
                                                  field_type_scalar)
 
          rr = global_sum(WORK0, distrb_tropic, &
                          field_loc_center, RCALCT_B) ! (r,r)
+		 if (rr > rr_old) then
+			solv_sum_iters = m
+			exit iter_loop
+		 endif
+		  rr_old = rr
+		 else
+		  rr = rr - eta1**2*eta0
+		 endif
 
-         if (rr < solv_convrg) then    ! solv_convrg    = 3121084.94389626
+         if (rr < solv_convrg) then
             ! ljm tuning
             if (my_task == master_task) &
                write(6,*)'pcg_iter_loop:iter#=',m
             solv_sum_iters = m
             exit iter_loop
          endif
-
-      endif
 
    enddo iter_loop
 
@@ -357,15 +354,15 @@ contains
 
    do j=this_block%jb,this_block%je
    do i=this_block%ib,this_block%ie
-      PX(i,j,bid) = PCNE(i,j,bid)*X(i+1,j+1,bid) + & !NE  precondNE
-                    PCNW(i,j,bid)*X(i-1,j+1,bid) + & !NW
-                    PCSE(i,j,bid)*X(i+1,j-1,bid) + & !SE
-                    PCSW(i,j,bid)*X(i-1,j-1,bid) + & !SW
-                    PCN (i,j,bid)*X(i ,j+1,bid) + & !N
-                    PCS (i,j,bid)*X(i ,j-1,bid) + & !S
-                    PCE (i,j,bid)*X(i+1,j ,bid) + & !E
-                    PCW (i,j,bid)*X(i-1,j ,bid) + & !W
-                    PCC (i,j,bid)*X(i ,j ,bid) !Center
+      PX(i,j,bid) = PCNE(i,j,bid)*X(i+1,j+1,bid) + &
+                    PCNW(i,j,bid)*X(i-1,j+1,bid) + &
+                    PCSE(i,j,bid)*X(i+1,j-1,bid) + &
+                    PCSW(i,j,bid)*X(i-1,j-1,bid) + &
+                    PCN (i,j,bid)*X(i ,j+1,bid) + &
+                    PCS (i,j,bid)*X(i ,j-1,bid) + &
+                    PCE (i,j,bid)*X(i+1,j ,bid) + &
+                    PCW (i,j,bid)*X(i-1,j ,bid) + &
+                    PCC (i,j,bid)*X(i ,j ,bid)
    end do
    end do
 
@@ -421,25 +418,127 @@ contains
 !-----------------------------------------------------------------------
 
    AX(:,:,bid) = c0
-
+   !$OMP PARALLEL DO PRIVATE(i,j)
    do j=this_block%jb,this_block%je
    do i=this_block%ib,this_block%ie
+      AX(i,j,bid) = A0 (i ,j ,bid)*X(i ,j ,bid) + &
+                    AN (i ,j ,bid)*X(i ,j+1,bid) + &
+                    AN (i ,j-1,bid)*X(i ,j-1,bid) + &
+                    AE (i ,j ,bid)*X(i+1,j ,bid) + &
+                    AE (i-1,j ,bid)*X(i-1,j ,bid) + &
+                    ANE(i ,j ,bid)*X(i+1,j+1,bid) + &
+                    ANE(i ,j-1,bid)*X(i+1,j-1,bid) + &
+                    ANE(i-1,j ,bid)*X(i-1,j+1,bid) + &
+                    ANE(i-1,j-1,bid)*X(i-1,j-1,bid)
+   end do
+   end do
+   !$OMP END PARALLEL DO
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end subroutine btrop_operator
+ 
+ 
+ subroutine btrop_operator_opt(AX,X,this_block,bid)
+
+! !DESCRIPTION:
+! This routine applies the nine-point stencil operator for the
+! barotropic solver. It takes advantage of some 9pt weights being
+! shifted versions of others.
+!
+! !REVISION HISTORY:
+! same as module
+
+! !INPUT PARAMETERS:
+
+   real (r8), dimension(nx_block,ny_block,max_blocks_tropic), &
+      intent(in) :: &
+      X ! array to be operated on
+
+   type (block), intent(in) :: &
+      this_block ! block info for this block
+
+   integer (int_kind), intent(in) :: &
+      bid ! local block address for this block
+
+! !OUTPUT PARAMETERS:
+
+   real (r8), dimension(nx_block,ny_block,max_blocks_tropic), &
+      intent(out) :: &
+      AX ! nine point operator result (Ax)
+
+!EOP
+!BOC
+!-----------------------------------------------------------------------
+!
+! local variables
+!
+!-----------------------------------------------------------------------
+
+   integer (int_kind) :: &
+      i,j,limit ! dummy counters
+
+!-----------------------------------------------------------------------
+
+    AX(:,:,bid) = c0
+   limit = this_block%ie - 3
+   do j=this_block%jb,this_block%je
+    do i=this_block%ib,limit,4
       AX(i,j,bid) = A0 (i ,j ,bid)*X(i ,j ,bid) + & !center  btropWgtCenter
                     AN (i ,j ,bid)*X(i ,j+1,bid) + & !north
-                    AN (i ,j-1,bid)*X(i ,j-1,bid) + & !north
+                    AN (i ,j-1,bid)*X(i ,j-1,bid) + & !northeast
                     AE (i ,j ,bid)*X(i+1,j ,bid) + & !east
                     AE (i-1,j ,bid)*X(i-1,j ,bid) + & !east
                     ANE(i ,j ,bid)*X(i+1,j+1,bid) + & !NE
                     ANE(i ,j-1,bid)*X(i+1,j-1,bid) + & !NE
                     ANE(i-1,j ,bid)*X(i-1,j+1,bid) + & !NE
                     ANE(i-1,j-1,bid)*X(i-1,j-1,bid) !NE
-   end do
+      AX(i+1,j,bid) = A0 (i+1 ,j ,bid)*X(i+1 ,j ,bid) + & !center  btropWgtCenter
+                    AN (i+1 ,j ,bid)*X(i+1 ,j+1,bid) + & !north
+                    AN (i+1 ,j-1,bid)*X(i+1 ,j-1,bid) + & !northeast
+                    AE (i+1 ,j ,bid)*X(i+2,j ,bid) + & !east
+                    AE (i,j ,bid)*X(i,j ,bid) + & !east
+                    ANE(i+1 ,j ,bid)*X(i+2,j+1,bid) + & !NE
+                    ANE(i+1 ,j-1,bid)*X(i+2,j-1,bid) + & !NE
+                    ANE(i,j ,bid)*X(i,j+1,bid) + & !NE
+                    ANE(i,j-1,bid)*X(i,j-1,bid) !NE    
+      AX(i+2,j,bid) = A0 (i+2 ,j ,bid)*X(i+2 ,j ,bid) + & !center  btropWgtCenter
+                    AN (i+2 ,j ,bid)*X(i+2 ,j+1,bid) + & !north
+                    AN (i+2 ,j-1,bid)*X(i+2 ,j-1,bid) + & !northeast
+                    AE (i+2 ,j ,bid)*X(i+3,j ,bid) + & !east
+                    AE (i+1,j ,bid)*X(i+1,j ,bid) + & !east
+                    ANE(i+2 ,j ,bid)*X(i+3,j+1,bid) + & !NE
+                    ANE(i+2 ,j-1,bid)*X(i+3,j-1,bid) + & !NE
+                    ANE(i+1,j ,bid)*X(i+1,j+1,bid) + & !NE
+                    ANE(i+1,j-1,bid)*X(i+1,j-1,bid) !NE
+      AX(i+3,j,bid) = A0 (i+3 ,j ,bid)*X(i+3 ,j ,bid) + & !center  btropWgtCenter
+                    AN (i+3 ,j ,bid)*X(i+3 ,j+1,bid) + & !north
+                    AN (i+3 ,j-1,bid)*X(i+3 ,j-1,bid) + & !northeast
+                    AE (i+3 ,j ,bid)*X(i+4,j ,bid) + & !east
+                    AE (i+2,j ,bid)*X(i+2,j ,bid) + & !east
+                    ANE(i+3 ,j ,bid)*X(i+4,j+1,bid) + & !NE
+                    ANE(i+3 ,j-1,bid)*X(i+4,j-1,bid) + & !NE
+                    ANE(i+2,j ,bid)*X(i+2,j+1,bid) + & !NE
+                    ANE(i+2,j-1,bid)*X(i+2,j-1,bid) !NE
+    end do       
+    do i=i,this_block%ie
+      AX(i,j,bid) = A0 (i ,j ,bid)*X(i ,j ,bid) + & !center  btropWgtCenter
+                    AN (i ,j ,bid)*X(i ,j+1,bid) + & !north
+                    AN (i ,j-1,bid)*X(i ,j-1,bid) + & !northeast
+                    AE (i ,j ,bid)*X(i+1,j ,bid) + & !east
+                    AE (i-1,j ,bid)*X(i-1,j ,bid) + & !east
+                    ANE(i ,j ,bid)*X(i+1,j+1,bid) + & !NE
+                    ANE(i ,j-1,bid)*X(i+1,j-1,bid) + & !NE
+                    ANE(i-1,j ,bid)*X(i-1,j+1,bid) + & !NE
+                    ANE(i-1,j-1,bid)*X(i-1,j-1,bid) !NE
+    end do
    end do
 
 !-----------------------------------------------------------------------
 !EOC
 
- end subroutine btrop_operator
+ end subroutine btrop_operator_opt
 
 !***********************************************************************
 

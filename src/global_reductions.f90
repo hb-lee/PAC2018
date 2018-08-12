@@ -210,6 +210,7 @@
    if (ltripole_grid .and. (field_loc == field_loc_Nface .or. &
                             field_loc == field_loc_NEcorner)) then
       !*** must remove redundant points from sum
+      !$OMP PARALLEL DO PRIVATE(n,ib,ie,i,j,bid,jb,je,this_block)
       do n=1,dist%local_block_num
             bid = n
             this_block = get_block(dist%local_block_ids(n),n)
@@ -247,7 +248,9 @@
                end do
             endif
       end do !block loop
+      !$OMP END PARALLEL DO
    else ! regular global sum
+      !$OMP PARALLEL DO PRIVATE(n,ib,ie,i,j,bid,jb,je)
       do n=1,dist%local_block_num
             bid = n
             call get_block_parameter(dist%local_block_ids(n),ib=ib,ie=ie,jb=jb,je=je)
@@ -265,6 +268,7 @@
                end do
             endif
       end do !block loop
+      !$OMP END PARALLEL DO
    endif
    !call timer_stop(timer_local)
 
@@ -624,7 +628,7 @@
    if (ltripole_grid .and. (field_loc == field_loc_Nface .or. &
                             field_loc == field_loc_NEcorner)) then
       !*** must remove redundant points from sum
-      do n=1,dist%local_block_num           ! nblocks_tropic  =  8 ???  local
+      do n=1,dist%local_block_num
             bid = n
             this_block = get_block(dist%local_block_ids(n),n)
             ib = this_block%ib
